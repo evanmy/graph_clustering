@@ -1,62 +1,131 @@
-# Program to count islands in boolean 2D matrix 
-class Graph: 
-  
-    def __init__(self, row, col, g): 
-        self.ROW = row 
-        self.COL = col 
-        self.graph = g 
-  
-    # A function to check if a given cell  
-    # (row, col) can be included in DFS 
-    def isSafe(self, i, j, visited): 
-        # row number is in range, column number 
-        # is in range and value is 1  
-        # and not yet visited 
-        return (i >= 0 and i < self.ROW and 
-                j >= 0 and j < self.COL and 
-                not visited[i][j] and self.graph[i][j]) 
-              
-  
-    # A utility function to do DFS for a 2D  
-    # boolean matrix. It only considers 
-    # the 8 neighbours as adjacent vertices 
-    def DFS(self, i, j, visited): 
-  
-        # These arrays are used to get row and  
-        # column numbers of 8 neighbours  
-        # of a given cell 
-        rowNbr = [-1, -1, -1,  0, 0,  1, 1, 1]; 
-        colNbr = [-1,  0,  1, -1, 1, -1, 0, 1]; 
-          
-        # Mark this cell as visited 
-        visited[i][j] = True
-  
-        # Recur for all connected neighbours 
-        for k in range(8): 
-            if self.isSafe(i + rowNbr[k], j + colNbr[k], visited): 
-                self.DFS(i + rowNbr[k], j + colNbr[k], visited) 
-  
-  
-    # The main function that returns 
-    # count of islands in a given boolean 
-    # 2D matrix 
-    def countIslands(self): 
-        # Make a bool array to mark visited cells. 
-        # Initially all cells are unvisited 
-        visited = [[False for j in range(self.COL)]for i in range(self.ROW)] 
-  
-        # Initialize count as 0 and travese  
-        # through the all cells of 
-        # given matrix 
-        count = 0
-        for i in range(self.ROW): 
-            for j in range(self.COL): 
-                # If a cell with value 1 is not visited yet,  
-                # then new island found 
-                if visited[i][j] == False and self.graph[i][j] == 1: 
-                    # Visit all cells in this island  
-                    # and increment island count 
-                    self.DFS(i, j, visited) 
-                    count += 1
-  
-        return count 
+import utils
+import scipy
+import random
+import matplotlib
+import tools as t
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import networkx as nx 
+import matplotlib.pyplot as plt
+
+from scipy import spatial
+from numpy import linalg as LA
+from collections import Counter
+from scipy.sparse import csgraph
+from scipy.sparse import csr_matrix
+from mpl_toolkits.mplot3d import Axes3D
+from sklearn.metrics import pairwise_kernels
+from sklearn.metrics.pairwise import rbf_kernel
+from networkx.algorithms.cuts import conductance
+from scipy.sparse.csgraph import connected_components
+from sklearn.datasets.samples_generator import make_blobs
+from sklearn.cluster import SpectralClustering, AffinityPropagation
+
+def k_cluster_test(points, 
+                   k, 
+                   l, 
+                   n_verts):
+    
+    M_d = spatial.distance_matrix(points,
+                                  points,
+                                  p=2)**2
+    dist_thrshld = np.median(M_d.flatten())
+
+    mask = M_d<dist_thrshld
+    remove_diag = np.eye(M_d.shape[0])==0
+    mask = remove_diag*mask
+
+    stay_prob = np.eye(M_d.shape[0])*0.5
+    d = mask.sum(0).max()
+    move_prob = 1/(2*d)
+
+    M = move_prob*mask + stay_prob
+    add_self_loop = np.diag(1-M.sum(0))
+    M = M + add_self_loop
+    M = M.astype('float32')
+    
+
+    # create a mask so that we dont sample verteces that are not connected to anything 
+    singles_mask = mask.sum(0)>0
+    singles_mask = singles_mask.reshape(-1,1)
+
+    #total number of vertices that are connected (not to itself)
+    n = (mask.sum(0) > 0).sum() 
+
+    S = np.random.random_sample((M.shape[1], 
+                                 n_verts))
+    S = S*singles_mask
+    S = (S.max(axis=0,keepdims=1) == S)*1
+    S = S.astype('float32')
+    
+    M_l = np.linalg.matrix_power(M, l)
+    S_l = np.matmul(M_l, S)
+    p_l2 = np.linalg.norm(S_l, ord=2, axis=0)**2
+    sigma = 192*n_verts*k/n
+    keep_idx = p_l2<sigma
+
+    '''
+    TODO: put a function that sample more vertices if it doesnt pass the sigma test'
+    【・ヘ・】
+    '''
+    assert len(keep_idx)==n_verts, 'Sample more vertices, didnt pass sigma test'
+    
+    H = spatial.distance_matrix(np.swapaxes(S_l,0,1),
+                                np.swapaxes(S_l,0,1),
+                                p=2)**2
+    remove_diag = np.eye(n_verts)*9999
+    H = H+remove_diag
+    H = H<=1/(4*n)
+
+    graph = csr_matrix(H)
+    n_components, labels = connected_components(csgraph=graph, directed=False, return_labels=True)
+
+    print('{} islands'.format(n_components))
+    if n_components>k:
+        print('k={} Need more clustering （・∩・)'.format(k))
+        return False
+    else:
+        print('k={} Good amount of clustering (･o･)'.format(k))    
+        return True
+    
+    
+def eigenDecomposition(A, plot = True, topK = 5):
+    """
+    :param A: Affinity matrix
+    :param plot: plots the sorted eigen values for visual inspection
+    :return A tuple containing:
+    - the optimal number of clusters by eigengap heuristic
+    - all eigen values
+    - all eigen vectors
+    
+    This method performs the eigen decomposition on a given affinity matrix,
+    following the steps recommended in the paper:
+    1. Construct the normalized affinity matrix: L = D−1/2ADˆ −1/2.
+    2. Find the eigenvalues and their associated eigen vectors
+    3. Identify the maximum gap which corresponds to the number of clusters
+    by eigengap heuristic
+    
+    References:
+    https://papers.nips.cc/paper/2619-self-tuning-spectral-clustering.pdf
+    http://www.kyb.mpg.de/fileadmin/user_upload/files/publications/attachments/Luxburg07_tutorial_4488%5b0%5d.pdf
+    """
+    L = csgraph.laplacian(A, normed=True)
+    n_components = A.shape[0]
+    
+    # LM parameter : Eigenvalues with largest magnitude (eigs, eigsh), that is, largest eigenvalues in 
+    # the euclidean norm of complex numbers.
+    # eigenvalues, eigenvectors = eigsh(L, k=n_components, which="LM", sigma=1.0, maxiter=5000)
+    eigenvalues, eigenvectors = LA.eigh(L)
+    eigenvalues = np.sort(np.real(eigenvalues))
+    if plot:
+        plt.title('Largest eigen values of input matrix')
+        plt.scatter(np.arange(len(eigenvalues)), eigenvalues)
+        plt.grid()
+        
+    # Identify the optimal number of clusters as the index corresponding
+    # to the larger gap between eigen values
+    index_largest_gap = np.argsort(np.diff(eigenvalues))[::-1][:topK]
+    nb_clusters = index_largest_gap + 1
+        
+    return nb_clusters, eigenvalues, eigenvectors
